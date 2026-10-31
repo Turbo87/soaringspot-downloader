@@ -23,6 +23,8 @@ The task page (`/tasks/{class}/task-{n}-on-{date}`) embeds the complete task as 
 
 Each task point has `name`, `type` (`start`, `point`, `finish`), `latitude` and `longitude` in radians, `elevation`, `distance`, `course_in`, `course_out`, `point_index`, `multiple_start`, and the observation zone fields `oz_type`, `oz_radius1`, `oz_radius2`, `oz_angle1`, `oz_angle2`, `oz_angle12` (angles in radians), `oz_line`, `oz_move`, `oz_reduce`, and `oz_max_altitude`.
 
+The tasks of the South African Nationals of 2012 to 2014 start with a `takeoff` point and end with a `landing` point. Both have the `oz_type` `unknown` and are named after the airfield or just `TAKEOFF` and `LANDING`. 17 of these 96 tasks consist of only these two points.
+
 The task notes on the same page are free text. They often contain rules that affect scoring, such as the minimum finish altitude, the pre-start altitude limit, and PEV start settings.
 
 ### Start opening time
