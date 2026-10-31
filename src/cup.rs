@@ -12,8 +12,9 @@ const WAYPOINT_HEADER: &str = "name,code,country,lat,lon,elev,style,rwdir,rwlen,
 pub struct Task {
     task_name: Option<String>,
     result_status: ResultStatus,
-    no_start: DateTime,
+    no_start: Option<DateTime>,
     /// Minimum task time of assigned area tasks in seconds, `0` otherwise.
+    #[serde(default)]
     task_duration: u32,
     start_on_entry: bool,
     task_points: Vec<TaskPoint>,
@@ -42,18 +43,23 @@ struct TaskPoint {
     zone: Zone,
 }
 
-/// Observation zone of a task point. Angles are in radians.
+/// Observation zone of a task point. Angles are in radians. Tasks of older
+/// competitions omit the fields that are `0`.
 #[derive(Debug, Clone, Deserialize)]
 struct Zone {
     oz_type: ZoneDirection,
     oz_radius1: f64,
     oz_angle1: f64,
+    #[serde(default)]
     oz_radius2: f64,
+    #[serde(default)]
     oz_angle2: f64,
+    #[serde(default)]
     oz_angle12: f64,
     oz_line: bool,
     oz_reduce: bool,
     oz_move: bool,
+    #[serde(default)]
     oz_max_altitude: f64,
 }
 
@@ -141,8 +147,8 @@ pub fn task_cup(task: &Task) -> Result<(String, Vec<String>), Box<dyn std::error
     writeln!(cup, "{}", columns.join(","))?;
 
     let mut options = String::new();
-    let no_start = task.no_start.time();
-    if no_start != Time::midnight() {
+    let no_start = task.no_start.map(|no_start| no_start.time());
+    if let Some(no_start) = no_start.filter(|&no_start| no_start != Time::midnight()) {
         write!(options, ",NoStart={}", no_start.strftime("%H:%M:%S"))?;
     }
     let task_time = task.task_duration;
@@ -223,6 +229,25 @@ mod tests {
             "task.cup ignores oz_move of 249 Finish South",
         ]
         "#);
+    }
+
+    #[test]
+    fn test_omitted_fields() {
+        let html = include_str!("../tests/fixtures/task.html");
+        let mut task: serde_json::Value =
+            serde_json::from_str(extract_task_json(html).unwrap()).unwrap();
+        let task_object = task.as_object_mut().unwrap();
+        task_object.remove("no_start");
+        task_object.remove("task_duration");
+        for point in task["task_points"].as_array_mut().unwrap() {
+            for field in ["oz_radius2", "oz_angle2", "oz_angle12", "oz_max_altitude"] {
+                point.as_object_mut().unwrap().remove(field);
+            }
+        }
+
+        let (cup, warnings) = task_cup(&serde_json::from_value(task).unwrap()).unwrap();
+        insta::assert_snapshot!(cup);
+        insta::assert_debug_snapshot!(warnings, @"[]");
     }
 
     #[test]
