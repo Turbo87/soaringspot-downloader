@@ -11,29 +11,19 @@ const WAYPOINT_HEADER: &str = "name,code,country,lat,lon,elev,style,rwdir,rwlen,
 #[derive(Debug, Deserialize)]
 pub struct Task {
     task_name: Option<String>,
-    result_status: ResultStatus,
-    no_start: DateTime,
+    no_start: Option<DateTime>,
     /// Minimum task time of assigned area tasks in seconds, `0` otherwise.
+    #[serde(default)]
     task_duration: u32,
     start_on_entry: bool,
     task_points: Vec<TaskPoint>,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "lowercase")]
-enum ResultStatus {
-    Official,
-    Unofficial,
-    Preliminary,
-    Practice,
-    Cancelled,
-    #[serde(untagged)]
-    Other(#[expect(dead_code, reason = "only shown in debug output")] String),
-}
-
 #[derive(Debug, Clone, Deserialize)]
 struct TaskPoint {
     name: String,
+    #[serde(rename = "type")]
+    point_type: PointType,
     latitude: f64,
     longitude: f64,
     elevation: f64,
@@ -42,18 +32,33 @@ struct TaskPoint {
     zone: Zone,
 }
 
-/// Observation zone of a task point. Angles are in radians.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum PointType {
+    Takeoff,
+    Start,
+    Point,
+    Finish,
+    Landing,
+}
+
+/// Observation zone of a task point. Angles are in radians. Tasks of older
+/// competitions omit the fields that are `0`.
 #[derive(Debug, Clone, Deserialize)]
 struct Zone {
     oz_type: ZoneDirection,
     oz_radius1: f64,
     oz_angle1: f64,
+    #[serde(default)]
     oz_radius2: f64,
+    #[serde(default)]
     oz_angle2: f64,
+    #[serde(default)]
     oz_angle12: f64,
     oz_line: bool,
     oz_reduce: bool,
     oz_move: bool,
+    #[serde(default)]
     oz_max_altitude: f64,
 }
 
@@ -65,23 +70,20 @@ enum ZoneDirection {
     Next,
     Previous,
     Start,
-}
-
-impl Task {
-    pub fn is_cancelled(&self) -> bool {
-        matches!(self.result_status, ResultStatus::Cancelled)
-    }
+    /// Used for takeoff and landing points, which have no observation zone.
+    Unknown,
 }
 
 impl Zone {
     /// Returns the `ObsZone` parameters after the point index.
-    fn cup_parameters(&self) -> String {
+    fn cup_parameters(&self) -> Result<String, &'static str> {
         let style = match self.oz_type {
             ZoneDirection::Fixed => 0,
             ZoneDirection::Symmetric => 1,
             ZoneDirection::Next => 2,
             ZoneDirection::Previous => 3,
             ZoneDirection::Start => 4,
+            ZoneDirection::Unknown => return Err("Unknown observation zone"),
         };
         let (r1, a1) = (self.oz_radius1, degrees(self.oz_angle1));
         let mut parameters = format!("Style={style},R1={r1}m,A1={a1}");
@@ -101,14 +103,24 @@ impl Zone {
         if self.oz_max_altitude != 0.0 {
             parameters += &format!(",MaxAlt={}m", self.oz_max_altitude);
         }
-        parameters
+        Ok(parameters)
     }
 }
 
 /// Generates a CUP file with the waypoints and the task, together with
 /// warnings about task data that the CUP file can't represent.
 pub fn task_cup(task: &Task) -> Result<(String, Vec<String>), Box<dyn std::error::Error>> {
-    let points = task.task_points.iter();
+    let find_point = |point_type| {
+        task.task_points
+            .iter()
+            .find(|point| point.point_type == point_type)
+    };
+    let takeoff = find_point(PointType::Takeoff);
+    let landing = find_point(PointType::Landing);
+    let points = task
+        .task_points
+        .iter()
+        .filter(|point| !matches!(point.point_type, PointType::Takeoff | PointType::Landing));
     let (alternative_starts, sequence): (Vec<_>, Vec<_>) =
         points.partition(|point| point.multiple_start);
     let [start, .., finish] = sequence[..] else {
@@ -135,14 +147,14 @@ pub fn task_cup(task: &Task) -> Result<(String, Vec<String>), Box<dyn std::error
 
     writeln!(cup, "-----Related Tasks-----")?;
     let mut columns = vec![quote(task.task_name.as_deref().unwrap_or_default())];
-    columns.push(quote(&start.name));
+    columns.push(quote(&takeoff.unwrap_or(start).name));
     columns.extend(sequence.iter().map(|point| quote(&point.name)));
-    columns.push(quote(&finish.name));
+    columns.push(quote(&landing.unwrap_or(finish).name));
     writeln!(cup, "{}", columns.join(","))?;
 
     let mut options = String::new();
-    let no_start = task.no_start.time();
-    if no_start != Time::midnight() {
+    let no_start = task.no_start.map(|no_start| no_start.time());
+    if let Some(no_start) = no_start.filter(|&no_start| no_start != Time::midnight()) {
         write!(options, ",NoStart={}", no_start.strftime("%H:%M:%S"))?;
     }
     let task_time = task.task_duration;
@@ -155,7 +167,11 @@ pub fn task_cup(task: &Task) -> Result<(String, Vec<String>), Box<dyn std::error
     }
 
     for (index, point) in sequence.iter().enumerate() {
-        writeln!(cup, "ObsZone={index},{}", point.zone.cup_parameters())?;
+        let parameters = point
+            .zone
+            .cup_parameters()
+            .map_err(|error| format!("{error} of {}", point.name))?;
+        writeln!(cup, "ObsZone={index},{parameters}")?;
         if point.zone.oz_move {
             warnings.push(format!("task.cup ignores oz_move of {}", point.name));
         }
@@ -226,6 +242,41 @@ mod tests {
     }
 
     #[test]
+    fn test_omitted_fields() {
+        let html = include_str!("../tests/fixtures/task.html");
+        let mut task: serde_json::Value =
+            serde_json::from_str(extract_task_json(html).unwrap()).unwrap();
+        let task_object = task.as_object_mut().unwrap();
+        task_object.remove("no_start");
+        task_object.remove("task_duration");
+        for point in task["task_points"].as_array_mut().unwrap() {
+            for field in ["oz_radius2", "oz_angle2", "oz_angle12", "oz_max_altitude"] {
+                point.as_object_mut().unwrap().remove(field);
+            }
+        }
+
+        let (cup, warnings) = task_cup(&serde_json::from_value(task).unwrap()).unwrap();
+        insta::assert_snapshot!(cup);
+        insta::assert_debug_snapshot!(warnings, @"[]");
+    }
+
+    #[test]
+    fn test_takeoff_and_landing() {
+        let json = include_str!("../tests/fixtures/task-takeoff-landing.json");
+        let (cup, warnings) = task_cup(&serde_json::from_str(json).unwrap()).unwrap();
+        insta::assert_snapshot!(cup);
+        insta::assert_debug_snapshot!(warnings, @"[]");
+    }
+
+    #[test]
+    fn test_unknown_zone_of_turnpoint() {
+        let json = include_str!("../tests/fixtures/task-takeoff-landing.json");
+        let mut task: Task = serde_json::from_str(json).unwrap();
+        task.task_points[2].zone.oz_type = ZoneDirection::Unknown;
+        insta::assert_snapshot!(task_cup(&task).unwrap_err(), @"Unknown observation zone of Leeudoringst");
+    }
+
+    #[test]
     fn test_multiple_starts() {
         let mut task = racing_task();
         let start = &task.task_points[0];
@@ -268,13 +319,6 @@ mod tests {
         let mut task = racing_task();
         task.task_points.truncate(1);
         insta::assert_snapshot!(task_cup(&task).unwrap_err(), @"Task needs at least a start and a finish point");
-    }
-
-    #[test]
-    fn test_result_status() {
-        let statuses = r#"["official", "cancelled", "postponed"]"#;
-        let statuses: Vec<ResultStatus> = serde_json::from_str(statuses).unwrap();
-        insta::assert_snapshot!(format!("{statuses:?}"), @r#"[Official, Cancelled, Other("postponed")]"#);
     }
 
     #[test]

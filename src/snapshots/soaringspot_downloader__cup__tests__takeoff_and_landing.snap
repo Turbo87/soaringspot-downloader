@@ -1,0 +1,18 @@
+---
+source: src/cup.rs
+expression: cup
+---
+name,code,country,lat,lon,elev,style,rwdir,rwlen,rwwidth,freq,desc
+"Welkom",,,2800.000S,02640.000E,0m,1,,,,,
+"Welkom Start",,,2759.767S,02632.683E,0m,1,,,,,
+"Leeudoringst",,,2714.283S,02614.150E,0m,1,,,,,
+"Mirage",,,2715.000S,02641.250E,0m,1,,,,,
+"Control NW",,,2754.700S,02636.000E,0m,1,,,,,
+"Finish NW",,,2759.250S,02639.583E,0m,1,,,,,
+-----Related Tasks-----
+"","Welkom","Welkom Start","Leeudoringst","Mirage","Control NW","Finish NW","Welkom"
+ObsZone=0,Style=2,R1=5000m,A1=180,Line=1
+ObsZone=1,Style=1,R1=500m,A1=180
+ObsZone=2,Style=1,R1=500m,A1=180
+ObsZone=3,Style=1,R1=1000m,A1=180
+ObsZone=4,Style=3,R1=3000m,A1=180,Line=1

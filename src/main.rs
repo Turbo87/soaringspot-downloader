@@ -203,10 +203,10 @@ fn failure_report(failed_days: &[String], failed_igc_files: &[String]) -> String
 }
 
 /// Fetches the task page and saves it together with the results page, the
-/// results as CSV file, the extracted task data, and the task as CUP file.
-/// Nothing is written unless all of them are available, so existing files
-/// are kept on failure. Existing results are also kept while SoaringSpot has
-/// no results for the day.
+/// results as CSV file, the extracted task data, and the task as CUP file if
+/// it can be created. Nothing is written unless the other files are
+/// available, so existing files are kept on failure. Existing results are also
+/// kept while SoaringSpot has no results for the day.
 async fn save_task_and_results(
     client: &reqwest::Client,
     daily_info: &DailyUrlInfo,
@@ -239,22 +239,21 @@ async fn save_task_and_results(
 type DayFile = (&'static str, String);
 
 /// Returns the task files to save, together with warnings about task data
-/// that `task.cup` can't represent. Cancelled tasks are saved without
-/// `task.cup` if they can't be converted, because SoaringSpot keeps them even
-/// when they are incomplete.
+/// that `task.cup` can't represent. Tasks that can't be converted, like the
+/// incomplete tasks that SoaringSpot keeps for cancelled days, are saved
+/// without `task.cup`.
 fn task_files(html: String) -> Result<(Vec<DayFile>, Vec<String>), Box<dyn std::error::Error>> {
     let json = extract_task_json(&html)?.to_owned();
-    let task: cup::Task = serde_json::from_str(&json)?;
+    let task_cup = serde_json::from_str::<cup::Task>(&json)
+        .map_err(Into::into)
+        .and_then(|task| cup::task_cup(&task));
     let mut files = vec![("task.html", html), ("task.json", json)];
-    let warnings = match cup::task_cup(&task) {
+    let warnings = match task_cup {
         Ok((task_cup, warnings)) => {
             files.push(("task.cup", task_cup));
             warnings
         }
-        Err(error) if task.is_cancelled() => {
-            vec![format!("task.cup not written for cancelled task: {error}")]
-        }
-        Err(error) => return Err(error),
+        Err(error) => vec![format!("task.cup not written: {error}")],
     };
     Ok((files, warnings))
 }
@@ -479,14 +478,25 @@ mod tests {
         let html = include_str!("../tests/fixtures/task-cancelled.html");
         let (files, warnings) = task_files(html.to_string()).unwrap();
         insta::assert_snapshot!(file_names(files).join(" "), @"task.html task.json");
-        insta::assert_snapshot!(warnings.join("\n"), @"task.cup not written for cancelled task: Task needs at least a start and a finish point");
+        insta::assert_snapshot!(warnings.join("\n"), @"task.cup not written: Task needs at least a start and a finish point");
     }
 
     #[test]
     fn task_files_with_official_task_without_finish() {
         let html = include_str!("../tests/fixtures/task-cancelled.html");
         let html = html.replace(r#""cancelled""#, r#""official""#);
-        insta::assert_snapshot!(task_files(html).unwrap_err(), @"Task needs at least a start and a finish point");
+        let (files, warnings) = task_files(html).unwrap();
+        insta::assert_snapshot!(file_names(files).join(" "), @"task.html task.json");
+        insta::assert_snapshot!(warnings.join("\n"), @"task.cup not written: Task needs at least a start and a finish point");
+    }
+
+    #[test]
+    fn task_files_with_unknown_point_type() {
+        let html = include_str!("../tests/fixtures/task.html");
+        let html = html.replacen(r#""type":"point""#, r#""type":"marker""#, 1);
+        let (files, warnings) = task_files(html).unwrap();
+        insta::assert_snapshot!(file_names(files).join(" "), @"task.html task.json");
+        insta::assert_snapshot!(warnings.join("\n"), @"task.cup not written: unknown variant `marker`, expected one of `takeoff`, `start`, `point`, `finish`, `landing` at line 1 column 842");
     }
 
     #[test]
